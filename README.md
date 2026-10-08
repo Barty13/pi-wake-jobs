@@ -72,6 +72,10 @@ Roughly six times less, and the whole log is still one `read` away. The gap wide
 `bash` pays up to its 50 KB ceiling, while the wake-up stays near 3.3 KB no matter how much the job
 printed.
 
+The receipt quotes the log path twice, so its size follows the length of `PI_JOBS_DIR`: 243 bytes on
+the default `$TMPDIR/pi-jobs` path, 183 bytes in the short directory the bench uses. Table C of
+`bun bench.ts` prints both the path length and the receipt size.
+
 ## What it does not fix
 
 - The command takes exactly as long. Nothing about the build is faster.
@@ -127,21 +131,23 @@ conversation you abandoned.
 
 ## Time
 
-From `bun bench.ts`, headless, no model, Apple M5 Max, Bun 1.4.2, Pi 1.1.0, debounce at its default
-400 ms, five repeats per row:
+From `bun bench.ts`, headless, no model, Apple M5 Max, Bun 1.4.2, Pi 1.1.0, version 0.1.2, debounce
+at its default 400 ms, five repeats per row:
 
 | Batch of jobs | p50 | p95 | max |
 | --- | --- | --- | --- |
-| 1 | 401 ms | 402 ms | 402 ms |
-| 3 | 401 ms | 402 ms | 402 ms |
-| 10 | 400 ms | 402 ms | 402 ms |
+| 1 | 401 ms | 401 ms | 401 ms |
+| 3 | 401 ms | 401 ms | 401 ms |
+| 10 | 398 ms | 401 ms | 401 ms |
 
 The gap is the debounce window and a couple of milliseconds. The batch size does not move it, which
 is the point of coalescing exits into one turn.
 
-One end-to-end run against a real model, `bun jobs-rpc.ts`: the job started at 2.8 s, the first run
-settled at 3.7 s while the job still ran, the `sleep 45` job exited at about 47.8 s, and the new run
-opened at 48.2 s. Call it about half a second from exit to a turn, model included.
+Two runs against a real model, `bun jobs-rpc.ts`, on this version. The wait scenario: `job_start`
+returned at 3.2 s, the first run settled at 3.9 s while the job still ran, the `sleep 45` job exited
+at about 48.2 s, and a new run opened at 48.6 s and settled at 50.7 s. The wait scenario: the tool
+waited inside one run and settled at 10.1 s after a `sleep 6` command, with no second run for the
+eight seconds of watching after it. Call it about half a second from exit to a turn, model included.
 
 ## Tokens
 

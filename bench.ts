@@ -91,6 +91,15 @@ async function wakeSize(bytes: number): Promise<{ text: string; logBytes: number
 	return { text, logBytes, commandBytes: new TextEncoder().encode(command).length };
 }
 
+/** The receipt `job_start` returns, as the model sees it. */
+async function receiptOf(command: string, name: string): Promise<{ text: string; pathBytes: number }> {
+	const started = await host.call("job_start", { command, name });
+	const text = (started.content as Array<{ text?: string }>).map((part) => part.text ?? "").join("");
+	const log = started.structuredContent.jobs[0]!.log as string;
+	await host.quiet(600);
+	return { text, pathBytes: new TextEncoder().encode(log).length };
+}
+
 /** Tokens Pi counts for this text. Pi's own estimator, not a guess. */
 function tokensOf(text: string): number {
 	return estimateTokens({ role: "user", content: text, timestamp: Date.now() });
@@ -131,6 +140,17 @@ for (const target of [0, 1700, 20_000]) {
 	);
 	await host.quiet(600);
 }
+
+lines.push("");
+lines.push("Table C  the receipt job_start returns");
+lines.push("command_bytes  log_path_bytes  receipt_bytes  pi_tokens");
+for (const command of ["true", "head -c 20000 /dev/zero | tr '\\0' 'x'"]) {
+	const { text, pathBytes } = await receiptOf(command, "noisy");
+	lines.push(
+		`${String(new TextEncoder().encode(command).length).padEnd(14)}${String(pathBytes).padEnd(15)}${String(new TextEncoder().encode(text).length).padEnd(14)}${tokensOf(text)}`,
+	);
+}
+lines.push(`note  the receipt quotes the log path twice, so it grows with the length of PI_JOBS_DIR`);
 
 lines.push("");
 console.log(lines.join("\n"));
