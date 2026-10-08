@@ -16,7 +16,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.1.43
+          # Matches the bun that wrote bun.lock. An older bun rejects that
+          # lockfile outright, and --frozen-lockfile then has nothing to work from.
+          bun-version: 1.4.2
       - run: bun install --frozen-lockfile
       - run: bun test
       - run: bunx tsc --noEmit
