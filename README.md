@@ -1,5 +1,9 @@
 # pi-wake-jobs
 
+[![CI](https://github.com/Barty13/pi-wake-jobs/actions/workflows/test.yml/badge.svg)](https://github.com/Barty13/pi-wake-jobs/actions/workflows/test.yml)
+[![npm version](https://img.shields.io/npm/v/pi-wake-jobs)](https://www.npmjs.com/package/pi-wake-jobs)
+[![license MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 Background shell jobs for [Pi](https://github.com/badlogic/pi-mono). `job_start` returns while the
 command is still running, and the turn ends. When the command exits, Pi starts a new turn with the
 result. The agent does not sit in a tool call waiting for you, and you do not sit in a session
@@ -270,6 +274,11 @@ JOBS_RPC_SCENARIO=wait bun jobs-rpc.ts # real model: wait carries the exit, no s
 They cost tokens and take about a minute each. The harness starts Pi with `--no-extensions`, so it
 loads the copy in this directory and nothing you have installed under `~/.pi/agent/extensions`.
 `PI_JOBS_EXTENSION` points it at another checkout.
+
+## Reporting
+
+Bugs and feature requests go to [issues](https://github.com/Barty13/pi-wake-jobs/issues).
+Vulnerabilities go to [SECURITY.md](SECURITY.md), through a private advisory, not through an issue.
 
 ## License
 
