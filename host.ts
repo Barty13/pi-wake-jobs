@@ -85,6 +85,9 @@ export class JobsHost {
 	/** Value of ctx.cwd handed to every tool call. */
 	cwd = "/tmp";
 
+	/** Every setStatus call, by key. undefined means the key was cleared. */
+	readonly statuses = new Map<string, string | undefined>();
+
 	readonly ctx: any = {
 		mode: this.mode,
 		hasUI: true,
@@ -92,7 +95,8 @@ export class JobsHost {
 		ui: {
 			notify: (message: string) => this.notifications.push(message),
 			setWidget: (key: string, lines: string[] | undefined) => this.widgets.set(key, lines),
-			setStatus: () => {},
+			setStatus: (key: string, text: string | undefined) => this.statuses.set(key, text),
+			theme: plainTheme(),
 		},
 		get cwd() {
 			return "/tmp";

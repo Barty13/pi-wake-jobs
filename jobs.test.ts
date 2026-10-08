@@ -239,11 +239,27 @@ describe("job_status", () => {
 });
 
 describe("the /jobs command", () => {
-	test("draws the table above the editor", async () => {
+	test("counts the rows and lines the columns up", async () => {
+		const short = await host.call("job_start", { command: "sleep 20", name: "a" });
+		const long = await host.call("job_start", { command: "sleep 20", name: "a-much-longer-name" });
 		await host.runCommand("jobs");
 		const lines = host.widgets.get("jobs")!;
-		expect(lines.length).toBeGreaterThanOrEqual(3);
-		expect(lines[0]).toMatch(/^j\d+ \S+ \[(running|ok|fail|stopped)\] exit=/);
+		expect(lines[0]).toMatch(/^\d+ running of \d+$/);
+		const rows = lines.slice(1).filter((line) => line.startsWith("j"));
+		const at = rows.map((row) => row.indexOf("["));
+		expect(Math.min(...at)).toBeGreaterThan(4);
+		expect(Math.min(...at)).toBe(Math.max(...at));
+		for (const job of [short, long]) {
+			await host.call("job_stop", { job_id: job.structuredContent.jobs[0]!.id });
+		}
+		await host.quiet(300);
+	});
+
+	test("every row still carries id, state, and exit", async () => {
+		await host.runCommand("jobs");
+		const rows = host.widgets.get("jobs")!.slice(1).filter((line) => line.startsWith("j"));
+		expect(rows.length).toBeGreaterThanOrEqual(1);
+		expect(rows[0]).toMatch(/^j\d+\s+\S+\s+\[(running|ok|fail|stopped)\]\s+exit=/);
 	});
 
 	test("the running filter shortens it", async () => {
@@ -251,14 +267,67 @@ describe("the /jobs command", () => {
 		const liveId = started.structuredContent.jobs[0]!.id;
 		await host.runCommand("jobs", "running");
 		const lines = host.widgets.get("jobs")!;
-		expect(lines.length).toBe(1);
-		expect(lines[0]).toContain("[running]");
+		// The header plus the one running job.
+		expect(lines.length).toBe(2);
+		expect(lines[0]).toMatch(/^\d+ running of \d+, 1 shown$/);
+		expect(lines[1]).toContain("[running]");
 		await host.runCommand("jobs");
-		expect(host.widgets.get("jobs")!.length).toBeGreaterThan(1);
+		expect(host.widgets.get("jobs")!.length).toBeGreaterThan(2);
 		// Drain the job here. Its exit must not land in a later test.
 		await host.call("job_stop", { job_id: liveId });
 		await host.quiet(300);
 	});
+});
+
+describe("the footer count", () => {
+	/** How many jobs the footer says are running. 0 when it shows nothing. */
+	function counted(): number {
+		return Number(/(\d+)/.exec(host.statuses.get("jobs") ?? "0")?.[1] ?? 0);
+	}
+
+	test("a job raises the count, its end lowers it, the last one clears it", async () => {
+		const base = counted();
+		const slow = await host.call("job_start", { command: "sleep 30", name: "slow" });
+		const slowId = slow.structuredContent.jobs[0]!.id;
+		expect(counted()).toBe(base + 1);
+		await host.call("job_start", { command: "true", name: "quick" });
+		expect(counted()).toBe(base + 2);
+		// The quick job ends on its own. Its exit must lower the count.
+		await host.quiet(400);
+		expect(counted()).toBe(base + 1);
+		await host.call("job_stop", { job_id: slowId });
+		await host.quiet(400);
+		expect(counted()).toBe(base);
+	});
+
+	test("the count is one short line a busy footer can hold", async () => {
+		const started = await host.call("job_start", { command: "sleep 20", name: "wide" });
+		const text = host.statuses.get("jobs") ?? "";
+		expect(text).toMatch(/^\d+ jobs? running$/);
+		expect(text.length).toBeLessThanOrEqual(16);
+		await host.call("job_stop", { job_id: started.structuredContent.jobs[0]!.id });
+		await host.quiet(300);
+	});
+
+	const off = "PI_JOBS_FOOTER=0 leaves the footer alone";
+
+	if (process.env.PI_JOBS_FOOTER === "0") {
+		test(off, async () => {
+			const started = await host.call("job_start", { command: "sleep 20", name: "silent" });
+			expect(host.statuses.has("jobs")).toBe(false);
+			await host.call("job_stop", { job_id: started.structuredContent.jobs[0]!.id });
+			await host.quiet(300);
+		});
+	} else {
+		test(off, () => {
+			const child = Bun.spawnSync([process.execPath, "test", "jobs.test.ts", "-t", off], {
+				cwd: import.meta.dir,
+				env: { ...process.env, PI_JOBS_FOOTER: "0" },
+			});
+			expect(child.stderr.toString()).toContain("1 pass");
+			expect(child.exitCode).toBe(0);
+		});
+	}
 });
 
 describe("the job table stays bounded", () => {

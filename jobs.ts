@@ -34,6 +34,14 @@
  *   `durationMs` from that context is the time `execute()` took, which is how
  *   long a `wait` in job_status blocked.
  *
+ * What the human sees without asking:
+ *   The footer carries a running count, `2 jobs running`, cleared when nothing
+ *   runs. Pi joins every extension status on one line sorted by key, so the text
+ *   stays short, one line, no path. `PI_JOBS_FOOTER=0` leaves the footer alone.
+ *   `/jobs` puts a table above the editor: a header with the count of the whole
+ *   table, then one aligned row per job. A log path costs 60 columns, so the
+ *   widget leaves it out and the plain listing in other modes keeps it.
+ *
  * Lifetime:
  *   A job is a child of this Pi process. `session_shutdown` signals every
  *   running job, for every reason including `reload`, then gives it two seconds
@@ -69,6 +77,7 @@
  *                        It caps only what the model asks for. The internal
  *                        waits of job_stop keep their own fixed limits.
  *   PI_JOBS_TAIL_BYTES   log bytes read into a report or a wake-up (default 3000)
+ *   PI_JOBS_FOOTER       0 leaves the Pi footer alone, so no job count shows there
  *   PI_JOBS_DIR          log directory (default <tmpdir>/pi-jobs)
  *   PI_JOBS_KEEP_DAYS    age a dead process's log may reach (default 7). Zero
  *                        turns the prune off altogether.
@@ -95,6 +104,8 @@ import { Text } from "@earendil-works/pi-tui";
 const DEBOUNCE_MS = Number(process.env.PI_JOBS_DEBOUNCE_MS ?? 400);
 const WAIT_MAX_S = Number(process.env.PI_JOBS_WAIT_MAX_S ?? 300);
 const TAIL_BYTES = Number(process.env.PI_JOBS_TAIL_BYTES ?? 3000);
+// The footer count is on unless the human turns it off.
+const FOOTER = process.env.PI_JOBS_FOOTER !== "0";
 const LOG_DIR = process.env.PI_JOBS_DIR ?? join(tmpdir(), "pi-jobs");
 const KEEP_DAYS = Number(process.env.PI_JOBS_KEEP_DAYS ?? 7);
 const KEEP_FILES = Number(process.env.PI_JOBS_KEEP ?? 200);
@@ -366,6 +377,7 @@ function settle(job: Job, exitCode: number | null, signal: string | null): void 
 	job.state = job.stopRequested ? "stopped" : exitCode === 0 ? "ok" : "fail";
 	job.child = null;
 	record(job);
+	if (seen) drawFooter(seen);
 	const callbacks = waiters.get(job.id) ?? [];
 	waiters.delete(job.id);
 	for (const callback of callbacks) callback();
@@ -563,6 +575,58 @@ function flat(text: string, max: number): string {
 	return one.length > max ? `${one.slice(0, max - 1)}…` : one;
 }
 
+/** Widest name the table prints before it shortens. */
+const NAME_COL = 18;
+
+/** One row, split into the cells the table pads. */
+type JobCell = { id: string; name: string; state: string; exit: string; elapsed: string; pid: string };
+
+function cellOf(job: JobView): JobCell {
+	return {
+		id: job.id,
+		name: flat(job.name, NAME_COL),
+		state: `[${job.state}]`,
+		exit: `exit=${job.exit_code ?? "null"}`,
+		elapsed: `${job.elapsed_sec}s`,
+		pid: job.pid ? `pid=${job.pid}` : "",
+	};
+}
+
+/** Column widths from the rows at hand, so a job past j999 does not skew the table. */
+function columnWidth(cells: JobCell[]): { id: number; name: number } {
+	return {
+		id: Math.max(3, ...cells.map((cell) => cell.id.length)),
+		name: Math.min(NAME_COL, Math.max(...cells.map((cell) => cell.name.length), 6)),
+	};
+}
+
+/** Plain aligned row for the widget, where color is not available. */
+function plainRow(cell: JobCell, width: { id: number; name: number }): string {
+	return `${cell.id.padEnd(width.id)} ${cell.name.padEnd(width.name)} ${cell.state.padEnd(10)} ${cell.exit.padEnd(9)}${cell.elapsed.padStart(6)}${cell.pid ? ` ${cell.pid}` : ""}`;
+}
+
+/**
+ * Header of the human table. It counts the whole table, not the rows on screen, so
+ * `/jobs running` cannot report "1 of 1" while three jobs exist.
+ */
+function tableHeader(all: JobView[], shown: number): string {
+	const running = all.filter((job) => job.state === "running").length;
+	const head = `${running} running of ${all.length}`;
+	return shown === all.length ? head : `${head}, ${shown} shown`;
+}
+
+/** Footer text for the running count. Short, because every extension shares one line. */
+function footerText(running: number): string | undefined {
+	if (running === 0) return undefined;
+	return `${running} ${running === 1 ? "job" : "jobs"} running`;
+}
+
+/** Draw or clear the footer count. Only the TUI has a footer to draw on. */
+function drawFooter(ctx: ExtensionContext): void {
+	if (!FOOTER || ctx.mode !== "tui") return;
+	ctx.ui.setStatus("jobs", footerText(list().filter((job) => job.state === "running").length));
+}
+
 function stateColor(state: string): ThemeColor {
 	if (state === "fail") return "error";
 	if (state === "stopped") return "warning";
@@ -608,13 +672,15 @@ function renderJobsResult(
 		if (options.isPartial) return new Text(theme.fg("dim", "waiting"), 0, 0);
 		return new Text(theme.fg("muted", "no job in this session"), 0, 0);
 	}
+	const cells = shown.map(cellOf);
+	const width = columnWidth(cells);
 	const lines = shown.map(
-		(job) =>
-			theme.fg("toolTitle", job.id) +
-			theme.fg("text", ` ${flat(job.name, 22)}`) +
-			theme.fg(stateColor(job.state), ` [${job.state}]`) +
-			theme.fg("muted", ` exit=${job.exit_code ?? "null"} ${job.elapsed_sec}s`) +
-			(job.pid ? theme.fg("dim", ` pid=${job.pid}`) : ""),
+		(_job, at) =>
+			theme.fg("toolTitle", cells[at]!.id.padEnd(width.id)) +
+			theme.fg("text", ` ${cells[at]!.name.padEnd(width.name)}`) +
+			theme.fg(stateColor(cells[at]!.state), ` ${cells[at]!.state.padEnd(10)}`) +
+			theme.fg("muted", ` ${cells[at]!.exit.padEnd(9)}${cells[at]!.elapsed.padStart(6)}`) +
+			(cells[at]!.pid ? theme.fg("dim", ` ${cells[at]!.pid}`) : ""),
 	);
 	// The tool duration is the useful number here: it is how long a `wait` blocked.
 	if (typeof context.durationMs === "number") lines.push(theme.fg("dim", `tool ${milliseconds(context.durationMs)}`));
@@ -660,6 +726,7 @@ const jobStart = defineTool({
 	async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 		seen = ctx;
 		const job = startJob(params, ctx);
+		drawFooter(ctx);
 		return report([job], `Started job ${job.id} (${job.name}). pid ${job.pid}. Log ${job.logPath}.`);
 	},
 });
@@ -750,6 +817,7 @@ export default function (pi: ExtensionAPI) {
 		batchWaited = false;
 		seedSeq();
 		pruneLogs();
+		drawFooter(ctx);
 	});
 
 	// A cancelled run holds the wake-ups. A settle that was not a cancellation
@@ -821,9 +889,21 @@ export default function (pi: ExtensionAPI) {
 			const all = list();
 			const onlyRunning = (args ?? "").trim().toLowerCase() === "running";
 			const shown = onlyRunning ? all.filter((job) => job.state === "running") : all;
-			const lines = shown.length
-				? shown.map((job) => `${job.id} ${job.name} [${job.state}] exit=${job.exitCode ?? "null"} ${seconds(job)}s  ${job.logPath}`)
-				: ["No job in this session."];
+			if (!shown.length) {
+				const empty = ["No job in this session."];
+				if (ctx.mode === "tui") ctx.ui.setWidget("jobs", empty, { placement: "aboveEditor" });
+				else ctx.ui.notify(empty.join("\n"), "info");
+				return;
+			}
+			const views = shown.map((job) => view(job, 0));
+			const cells = views.map(cellOf);
+			const width = columnWidth(cells);
+			const head = tableHeader(list().map((job) => view(job, 0)), views.length);
+			// A log path costs 60 characters, so the widget leaves it out and the plain
+			// listing keeps it.
+			const lines = ctx.mode === "tui"
+				? [head, ...cells.map((cell) => plainRow(cell, width))]
+				: [head, ...cells.map((cell, at) => `${plainRow(cell, width)}  ${views[at]!.log}`)];
 			if (ctx.mode === "tui") ctx.ui.setWidget("jobs", lines, { placement: "aboveEditor" });
 			else ctx.ui.notify(lines.join("\n"), "info");
 		},
