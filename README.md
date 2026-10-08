@@ -224,8 +224,11 @@ Pruning only reaches files of runs that ended. Set `PI_JOBS_KEEP_DAYS=0` to keep
 
 ## Limits
 
-- **No Windows.** Detached process groups and `pgrep` do not exist there. The extension does not
-  check and will not stop jobs correctly.
+- **Not for native Windows.** Stopping a job signals a POSIX process group, `detached: true` at spawn
+  and `process.kill(-pid, signal)` after. Windows has no POSIX process groups, so a stop would reach
+  the shell and not the compilers under it, and the commands assume POSIX shell syntax. Nothing here is
+  tested on Windows and there is no plan to support it. WSL runs a real Linux kernel, so it is the
+  Linux path, although I have not run it there.
 - macOS is verified on an Apple M5 Max. Linux runs in CI on every push.
 - **A job does not outlive its session.** `session_shutdown` signals every running job and gives it
   two seconds to finish its own cleanup, then signals the process group again. A reload stops jobs
@@ -240,7 +243,8 @@ Pruning only reaches files of runs that ended. Set `PI_JOBS_KEEP_DAYS=0` to keep
 ## How it was built
 
 Written on an Apple M5 Max (128 GiB, macOS 27.0.1) with Pi 1.1.0 in the terminal, driven by a local
-model at oQ5e quantization. No cloud model was involved, so the loop was free and long: the whole
+Qwen3.8-Flash-Next at oQ5e quantization, id `Qwen3.8-Flash-Next-oQ5e-MTP`, served over a local
+OpenAI-compatible endpoint. No cloud model was involved, so the loop was free and long: the whole
 extension, its 44 tests, this README's numbers and the two end-to-end harness runs.
 
 The extension state machine is the interesting part, and `jobs.ts` documents it at the top: how
