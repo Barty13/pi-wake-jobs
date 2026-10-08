@@ -242,10 +242,10 @@ Pruning only reaches files of runs that ended. Set `PI_JOBS_KEEP_DAYS=0` to keep
 
 ## How it was built
 
-Written on an Apple M5 Max (128 GiB, macOS 27.0.1) with Pi 1.1.0 in the terminal, driven by a local
-Qwen3.8-Flash-Next at oQ5e quantization, id `Qwen3.8-Flash-Next-oQ5e-MTP`, served over a local
-OpenAI-compatible endpoint. No cloud model was involved, so the loop was free and long: the whole
-extension, its 44 tests, this README's numbers and the two end-to-end harness runs.
+Written on an Apple M5 Max (128 GiB, macOS 27.0.1) with Pi 1.1.0, driven by a local
+Qwen3.8-Flash-Next-oQ5e-MTP served over oMLX 0.7.0 on the same machine. No cloud model was involved,
+so the loop was free and long: the whole extension, its 44 tests, this README's numbers and the two
+end-to-end harness runs.
 
 The extension state machine is the interesting part, and `jobs.ts` documents it at the top: how
 exits become one batched turn, how a `wait` in `job_status` pulls a job out of that batch, and why a
