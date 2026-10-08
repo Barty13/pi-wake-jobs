@@ -17,25 +17,64 @@ $ pi install git:github.com/Barty13/pi-wake-jobs
 
 ## The problem it removes
 
-A long command has two bad shapes in an agent session.
+Pi runs one turn at a time, and a turn is the unit that blocks. Your message does not interrupt a
+running tool call. From the Pi RPC docs: a steering message "is delivered after the current assistant
+turn finishes executing its tool calls, before the next LLM call". So a foreground command holds the
+conversation, not just the terminal.
 
-The agent runs it in the foreground and holds one tool call open. Nothing else happens for the
-length of the command. You cannot steer the run, the context grows with a wall of dead time, and a
-ten minute build blocks a ten second question.
+Three things go wrong in that shape.
 
-Or the agent runs it in the background and then polls it. Every poll is a model call, and the
-agent has to remember to poll.
+**The correction arrives after the damage.** The agent runs a 40 minute build with the wrong flag. You
+see it after 30 seconds. Your message sits in a queue for another 39 and a half minutes, by which time
+the build is done and the mistake is compiled in. `bash` returns when the command returns, so a turn
+that runs 40 minutes is a turn you cannot enter.
 
-`pi-wake-jobs` makes it one shape: start the command, finish the turn, get a turn back when the
-command exits.
+**The output stays.** `bash` returns up to 2000 lines or 50 KB into context, the constants
+`DEFAULT_MAX_LINES` and `DEFAULT_MAX_BYTES` in its truncate module. That block rides along in every
+later request until compaction moves it. A noisy build makes every subsequent turn more expensive, and
+pushes useful context toward the compactor.
+
+**Delivery depends on the model remembering.** The usual workaround, `nohup` plus polling, makes the
+model the courier. It has to remember to check, decide how often, and still be around when the command
+finishes. If the run ends first, or the agent forgets, the result sits in a file that nobody reads.
+Here the kernel hands the exit to Pi, so delivery does not depend on the model's diligence.
+
+`pi-wake-jobs` collapses this into one shape: start the command, end the turn, get a turn back when
+the command exits.
 
 ```
 agent:  call job_start with "make -j14 world"     ->  j1, pid 8812, log path
         answer your question, settle
-[40 minutes of nothing]
+[40 minutes of nothing, and you can talk to the agent the whole time]
         a turn opens: "One background job finished: j1 … exit code 0 after 2431s"
 agent:  reads the log, continues
 ```
+
+## What the same command costs
+
+One noisy command, `head -c 20000 /dev/zero | tr '\0' 'x'`, measured twice: once through the built-in
+`bash` tool in a real Pi session with `--no-extensions`, once through `job_start` with a 20000 byte
+log. The `bash` figure is the tool result content, 20000 bytes of it, not truncated at this size
+because the ceiling sits at 50 KB. Tokens are Pi's own estimator.
+
+| Path | Bytes into context | Tokens | When |
+| --- | --- | --- | --- |
+| `bash` | 20000 | 5000 | one turn, held open for the whole command |
+| `job_start` receipt | 243 | 61 | at once, turn ends |
+| wake-up with a 3000 B tail | 3268 | 817 | when the command exits |
+| **total through the model** | **3511** | **878** | two short turns |
+
+Roughly six times less, and the whole log is still one `read` away. The gap widens with the command:
+`bash` pays up to its 50 KB ceiling, while the wake-up stays near 3.3 KB no matter how much the job
+printed.
+
+## What it does not fix
+
+- The command takes exactly as long. Nothing about the build is faster.
+- The result is not in the turn that started it. If you need the output to keep reasoning, use `bash`.
+- A job does not survive the session, see Limits.
+- Pi re-sends context on every request, so the `bash` column is a per-turn tax, not a one-off. Prompt
+  caching discounts it, by how much depends on the provider.
 
 ## What it adds
 
@@ -105,7 +144,8 @@ opened at 48.2 s. Call it about half a second from exit to a turn, model include
 A wake-up is a message, so it costs input tokens once. The log does not: it stays on disk and the
 agent reads it with the `read` tool, choosing how much. The default tail cap is 3000 bytes.
 
-Same bench run, Pi's own token estimator:
+Same bench run, Pi's own token estimator. The alternative in the table above competes with these
+numbers: `bash` would put up to 50 KB of the same command into the turn.
 
 | Log size | Message bytes | Tokens | Note |
 | --- | --- | --- | --- |
@@ -171,6 +211,17 @@ either one is enough:
 A log whose Pi process still runs is never touched, even if it has not been written to for weeks.
 Pruning only reaches files of runs that ended. Set `PI_JOBS_KEEP_DAYS=0` to keep everything.
 
+## When not to use it
+
+- Anything that finishes in under a second. `bash` gives the output in one turn, `job_start` needs two
+  and writes a file you did not need.
+- Anything where the output is the next thought, not a record: reading a file, a test run you are about
+  to interpret, a git command whose result decides the next step.
+- Anything reading stdin. The job has no terminal.
+- Anything that must finish before the session ends. Jobs die with the session.
+- Work whose exit you must not miss, and where waiting is the whole job anyway. Pass `wait` to
+  `job_status` instead: it carries the exit inside the current turn rather than opening a later one.
+
 ## Limits
 
 - **No Windows.** Detached process groups and `pgrep` do not exist there. The extension does not
@@ -178,7 +229,8 @@ Pruning only reaches files of runs that ended. Set `PI_JOBS_KEEP_DAYS=0` to keep
 - macOS is verified on an Apple M5 Max. Linux runs in CI on every push.
 - **A job does not outlive its session.** `session_shutdown` signals every running job and gives it
   two seconds to finish its own cleanup, then signals the process group again. A reload stops jobs
-  too. Nothing is rebuilt when the session comes back.
+  too. Nothing is rebuilt when the session comes back. A Pi process that dies hard, without a
+  shutdown, leaves its jobs running with no wake-up and no record in the next session.
 - A process that never exits produces no wake-up. Stop it with `job_stop`.
 - Print and JSON modes get no wake-ups, because no idle agent is waiting. There, pass `wait` to
   `job_status`.
