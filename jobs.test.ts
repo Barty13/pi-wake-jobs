@@ -643,6 +643,53 @@ describe("who can read a job log", () => {
 	});
 });
 
+describe("a reload does not reuse a log name", () => {
+	/** Highest job number this process left in the log directory. */
+	function highestOwn(): number {
+		const mine = new RegExp(`^j(\\d+)-${process.pid}\\.log$`);
+		return readdirSync(LOG_DIR).reduce((max, name) => {
+			const match = mine.exec(name);
+			return match ? Math.max(max, Number(match[1])) : max;
+		}, 0);
+	}
+
+	function numberIn(path: string): number {
+		return Number(/\/j(\d+)-/.exec(path)![1]);
+	}
+
+	test("the next job numbers itself after the logs this process left behind", async () => {
+		mkdirSync(LOG_DIR, { recursive: true });
+		const probe = await host.call("job_start", { command: "true", name: "base" });
+		const base = numberIn(probe.structuredContent.jobs[0]!.log);
+		const left = join(LOG_DIR, `j${base + 3}-${process.pid}.log`);
+		const higher = join(LOG_DIR, `j${base + 11}-${process.pid}.log`);
+		writeFileSync(left, "the run before the reload\n");
+		writeFileSync(higher, "and one more\n");
+		await host.emit("session_start", { reason: "startup" });
+		const started = await host.call("job_start", { command: "echo after-reload", name: "after" });
+		const log = started.structuredContent.jobs[0]!.log;
+		expect(numberIn(log)).toBe(base + 12);
+		expect(readFileSync(left, "utf8")).toBe("the run before the reload\n");
+		expect(readFileSync(higher, "utf8")).toBe("and one more\n");
+		await host.quiet();
+		rmSync(left, { force: true });
+		rmSync(higher, { force: true });
+	});
+
+	test("a log of another process does not move the counter", async () => {
+		let dead = 999_999;
+		while (alive(dead)) dead--;
+		const other = join(LOG_DIR, `j4242-${dead}.log`);
+		writeFileSync(other, "written by a different pi run\n");
+		await host.emit("session_start", { reason: "startup" });
+		const expected = highestOwn() + 1;
+		const started = await host.call("job_start", { command: "echo other-pid", name: "other" });
+		expect(numberIn(started.structuredContent.jobs[0]!.log)).toBe(expected);
+		await host.quiet();
+		rmSync(other, { force: true });
+	});
+});
+
 describe("session_shutdown", () => {
 	test("a job that cleans up on the signal is allowed to finish cleaning", async () => {
 		await host.emit("session_start", { reason: "startup" });

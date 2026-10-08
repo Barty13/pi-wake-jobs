@@ -205,6 +205,10 @@ Environment variables, read once at load.
 ## Log files
 
 Every job writes `$PI_JOBS_DIR/<id>-<pid>.log`, and the pid belongs to the Pi process that ran it.
+The number continues after the highest number that pid left in the directory, so a reload cannot land
+on an earlier log and cut it off. Two Pi processes never share a name, each owns the name carrying its
+own pid.
+
 Cleanup runs at `session_start`, when the session is idle and no path is in use yet. Two triggers,
 either one is enough:
 

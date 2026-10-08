@@ -45,10 +45,16 @@
  * result with the `wait` parameter of job_status, and the run ending stops any
  * job still running.
  *
- * Log files:
- *   One file per job, named <id>-<pid>.log, where the pid is the Pi process that
- *   wrote it. Prune runs on `session_start`, while the session is idle and no
- *   path is in use yet. Two triggers, either one is enough: a log older than
+  * Log files:
+ *   One file per job, named <id>-<pid>.log. The pid is the Pi process that wrote
+ *   it. The number continues after the highest one this pid left in the
+ *   directory, so a reload cannot land on an earlier log and cut it off. Two Pi
+ *   processes never collide, each owns the name carrying its own pid, and the
+ *   seed reads the directory, so a pid handed back by the operating system keeps
+ *   counting too. The number restarts only in an empty directory.
+ *
+ *   Prune runs on `session_start`, while the session is idle and no path is in
+ *   use yet. Two triggers, either one is enough: a log older than
  *   PI_JOBS_KEEP_DAYS whose Pi process is gone, and the oldest logs of dead
  *   processes beyond the newest PI_JOBS_KEEP. A log whose Pi process still runs
  *   is never touched, so the ceiling can only reach runs that ended. Only the
@@ -229,6 +235,25 @@ function tighten(path: string, mode: number): void {
  *
  * PI_JOBS_KEEP_DAYS=0 turns the sweep off. PI_JOBS_KEEP=0 turns the ceiling off.
  */
+/**
+ * Number the next job after the highest number this process left in the log directory. A reload keeps
+ * the pid and resets the counter, so the next job would land on an existing path, and open with "w"
+ * cuts that log off. Only this pid is read, so logs of other runs never push the number around.
+ */
+function seedSeq(): void {
+	let names: string[];
+	try {
+		names = readdirSync(LOG_DIR);
+	} catch {
+		return;
+	}
+	const mine = new RegExp(`^j(\\d+)-${process.pid}\\.log$`);
+	for (const name of names) {
+		const match = mine.exec(name);
+		if (match) seq = Math.max(seq, Number(match[1]));
+	}
+}
+
 function pruneLogs(): void {
 	// Access control does not wait for retention, and does not wait for a job. A missing directory
 	// resists the chmod, and tighten keeps quiet about it.
@@ -723,6 +748,7 @@ export default function (pi: ExtensionAPI) {
 		held = false;
 		pendingRelease = false;
 		batchWaited = false;
+		seedSeq();
 		pruneLogs();
 	});
 
