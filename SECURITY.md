@@ -31,11 +31,11 @@ Read this before you call something a vulnerability. Much of the surface below i
   no approval and shows no prompt. An agent that starts a wrong command runs a wrong command.
 - It makes no network request of its own. It opens no port and downloads nothing. The Pi process you
   already use still talks to its model provider, that is outside this extension.
-- It writes job output to `$TMPDIR/pi-jobs`. The directory and the log files take the modes your
-  umask gives. Under the common umask `0022` that is `drwxr-xr-x` and `-rw-r--r--`, so any other
-  account on the machine can read every job log. On your own laptop that means nothing. On a shared
-  host it is a leak: point `PI_JOBS_DIR` at a directory only you can read, or start Pi under umask
-  `0077`.
+- It writes job output to `$TMPDIR/pi-jobs`. The directory is created `0700` and each log `0600`, so
+  other accounts on the machine cannot read your commands or their output. The mode is set again after
+  the file is created, because `mkdir` and `open` mask the mode with your umask. An existing directory
+  and logs left by a version before 0.1.1 are tightened at session start. If you point `PI_JOBS_DIR`
+  at a path another account owns, the tighten cannot happen and the files keep the mode that owner set.
 - It writes job records into the Pi transcript file, in your project directory or in
   `$PI_CODING_AGENT_DIR/projects`. The record repeats the command line and the log path.
 

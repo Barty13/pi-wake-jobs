@@ -217,6 +217,10 @@ Pruning only reaches files of runs that ended, and only names this extension wro
 Any other file in that directory is left alone whatever its age. Set `PI_JOBS_KEEP_DAYS=0` to keep
 everything.
 
+The directory is `0700` and every log `0600`, set again after creation because `mkdir` and `open`
+mask the mode with your umask. A directory that exists already, and logs left by a version before
+0.1.1, are tightened at the same sweep.
+
 ## When not to use it
 
 - Anything that finishes in under a second. `bash` gives the output in one turn, `job_start` needs two

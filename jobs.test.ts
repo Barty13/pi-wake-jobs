@@ -28,7 +28,7 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { JobsHost, plainTheme } from "./host.ts";
 
@@ -586,6 +586,61 @@ describe("log retention", () => {
 			expect(child.exitCode).toBe(0);
 		});
 	}
+});
+
+describe("who can read a job log", () => {
+	/** Mode of a path, with the file type bits removed. */
+	function modeOf(path: string): number {
+		return statSync(path).mode & 0o777;
+	}
+
+	test("a new log and its directory are open to your account alone", async () => {
+		const previousUmask = process.umask(0o022);
+		await host.emit("session_start", { reason: "startup" });
+		const started = await host.call("job_start", { command: "echo secret-line", name: "private" });
+		process.umask(previousUmask);
+		const log = started.structuredContent.jobs[0]!.log;
+		expect(modeOf(LOG_DIR)).toBe(0o700);
+		expect(modeOf(log)).toBe(0o600);
+		await host.quiet();
+	});
+
+	test("a directory that already exists gets tightened", async () => {
+		chmodSync(LOG_DIR, 0o755);
+		await host.emit("session_start", { reason: "startup" });
+		await host.call("job_start", { command: "echo still-private", name: "tighten" });
+		expect(modeOf(LOG_DIR)).toBe(0o700);
+		await host.quiet();
+	});
+
+	test("a log an older version left world readable gets tightened", async () => {
+		const legacy = join(LOG_DIR, "j7777-1.log");
+		writeFileSync(legacy, "left behind by 0.1.0\n");
+		chmodSync(legacy, 0o644);
+		await host.emit("session_start", { reason: "startup" });
+		expect(existsSync(legacy)).toBe(true);
+		expect(modeOf(legacy)).toBe(0o600);
+		rmSync(legacy);
+		await host.quiet();
+	});
+
+	test("a session that starts no job still tightens the directory", async () => {
+		chmodSync(LOG_DIR, 0o755);
+		await host.emit("session_start", { reason: "startup" });
+		expect(modeOf(LOG_DIR)).toBe(0o700);
+		await host.quiet(100);
+	});
+
+	test("a file the extension never wrote keeps its own mode", async () => {
+		const foreign = join(LOG_DIR, "not-a-job-log.txt");
+		writeFileSync(foreign, "yours\n");
+		chmodSync(foreign, 0o644);
+		await host.emit("session_start", { reason: "startup" });
+		await host.call("job_start", { command: "echo peek", name: "peek" });
+		expect(modeOf(foreign)).toBe(0o644);
+		rmSync(foreign);
+		await host.quiet();
+	});
 });
 
 describe("session_shutdown", () => {

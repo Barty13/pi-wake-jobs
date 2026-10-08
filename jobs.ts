@@ -51,7 +51,11 @@
  *   path is in use yet. Two triggers, either one is enough: a log older than
  *   PI_JOBS_KEEP_DAYS whose Pi process is gone, and the oldest logs of dead
  *   processes beyond the newest PI_JOBS_KEEP. A log whose Pi process still runs
- *   is never touched, so the ceiling can only reach runs that ended.
+ *   is never touched, so the ceiling can only reach runs that ended. Only the
+ *   name pattern j<number>-<pid>.log is pruned, so a foreign file in a shared
+ *   PI_JOBS_DIR survives. The directory is 0700 and a log is 0600: mkdir and
+ *   open mask the mode with the umask, so tighten sets it again after the call,
+ *   and the sweep tightens what an older version left behind.
  *
  * Settings (environment variables):
  *   PI_JOBS_DEBOUNCE_MS  window that coalesces exits into one turn (default 400)
@@ -67,7 +71,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
@@ -203,6 +207,18 @@ function drop(path: string): void {
 }
 
 /**
+ * Set an exact mode. mkdir and open mask the mode they are given with the umask, so the mode is set
+ * again after the call. A file another account owns resists, and that is left alone.
+ */
+function tighten(path: string, mode: number): void {
+	try {
+		chmodSync(path, mode);
+	} catch {
+		// Not ours to tighten.
+	}
+}
+
+/**
  * Drop log files no run needs any more. Two triggers, either one is enough.
  *
  * The owner of a log is the process that wrote it, and its pid sits in the file
@@ -214,6 +230,9 @@ function drop(path: string): void {
  * PI_JOBS_KEEP_DAYS=0 turns the sweep off. PI_JOBS_KEEP=0 turns the ceiling off.
  */
 function pruneLogs(): void {
+	// Access control does not wait for retention, and does not wait for a job. A missing directory
+	// resists the chmod, and tighten keeps quiet about it.
+	tighten(LOG_DIR, 0o700);
 	if (KEEP_DAYS <= 0) return;
 	let names: string[];
 	try {
@@ -233,12 +252,16 @@ function pruneLogs(): void {
 		} catch {
 			continue;
 		}
-		if (ownerAlive(match[1]!)) continue;
-		if (mtime > cutoff) {
-			young.push({ path, mtime });
+		const owned = ownerAlive(match[1]!);
+		if (!owned && mtime <= cutoff) {
+			drop(path);
 			continue;
 		}
-		drop(path);
+		// Keep, so make it read-only to the rest of the machine. This also fixes logs an older
+		// version wrote world readable.
+		tighten(path, 0o600);
+		// A log whose Pi process still runs is never a candidate for the ceiling.
+		if (!owned && mtime > cutoff) young.push({ path, mtime });
 	}
 	if (KEEP_FILES <= 0 || young.length <= KEEP_FILES) return;
 	young.sort((a, b) => a.mtime - b.mtime);
@@ -389,7 +412,9 @@ function headLine(batch: Job[], waited: boolean): string {
 }
 
 function startJob(params: { command: string; name?: string; cwd?: string }, ctx: ExtensionContext): Job {
-	mkdirSync(LOG_DIR, { recursive: true });
+	mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
+	// recursive: true leaves the mode of a directory that already existed.
+	tighten(LOG_DIR, 0o700);
 	const id = `j${++seq}`;
 	const job: Job = {
 		id,
@@ -406,7 +431,8 @@ function startJob(params: { command: string; name?: string; cwd?: string }, ctx:
 		reported: false,
 		child: null,
 	};
-	const handle = openSync(job.logPath, "w");
+	const handle = openSync(job.logPath, "w", 0o600);
+	tighten(job.logPath, 0o600);
 	let child: ChildProcess;
 	try {
 		child = spawn(shellBinary(), ["-c", params.command], {
