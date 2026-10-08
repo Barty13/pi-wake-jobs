@@ -1,0 +1,218 @@
+# pi-wake-jobs
+
+Background shell jobs for [Pi](https://github.com/badlogic/pi-mono). `job_start` returns while the
+command is still running, and the turn ends. When the command exits, Pi starts a new turn with the
+result. The agent does not sit in a tool call waiting for you, and you do not sit in a session
+waiting for the agent.
+
+```
+$ pi install npm:pi-wake-jobs
+```
+
+Or from git:
+
+```
+$ pi install git:github.com/Barty13/pi-wake-jobs
+```
+
+## The problem it removes
+
+A long command has two bad shapes in an agent session.
+
+The agent runs it in the foreground and holds one tool call open. Nothing else happens for the
+length of the command. You cannot steer the run, the context grows with a wall of dead time, and a
+ten minute build blocks a ten second question.
+
+Or the agent runs it in the background and then polls it. Every poll is a model call, and the
+agent has to remember to poll.
+
+`pi-wake-jobs` makes it one shape: start the command, finish the turn, get a turn back when the
+command exits.
+
+```
+agent:  call job_start with "make -j14 world"     ->  j1, pid 8812, log path
+        answer your question, settle
+[40 minutes of nothing]
+        a turn opens: "One background job finished: j1 … exit code 0 after 2431s"
+agent:  reads the log, continues
+```
+
+## What it adds
+
+Three tools and one command.
+
+| Name | What it does |
+| --- | --- |
+| `job_start` | Start a command in the background, return its id at once. `command`, optional `name`, optional `cwd`. |
+| `job_status` | State, exit code, elapsed seconds, log tail for one job or the whole session. Pass `wait` to block until one job ends. |
+| `job_stop` | Signal a job and every command it started. |
+| `/jobs` | The human's view. Draws a table above the editor, no model turn. `/jobs running` lists only open work. |
+
+Each job is one command, one log file, one exit code. The job is a detached child process and the
+leader of its own process group, so `job_stop` reaches the compilers and test workers it started,
+not only the shell line you typed.
+
+## What changes in a session
+
+The tool call is short. In the transcript a job is one line, and it stays one line while the job
+runs:
+
+```
+job_start j1 kernel-build  make -j14 world
+j1 kernel-build [running] exit=null 12s pid=8812
+```
+
+`/jobs` keeps a table above the editor for as long as the session lives, so you can see open work
+without asking the model. Expanded, a job line shows the log path and the last bytes of output.
+
+The wake-up is a normal message in the conversation, so you see exactly what the agent sees:
+
+```
+One background job finished:
+- j1 kernel-build: exit code 0 after 2431s. Command: make -j14 world
+  Log: /tmp/pi-jobs/j1-8812.log
+  Last output:
+  …
+```
+
+Several jobs that exit together produce **one** message and one turn, inside a window of
+`PI_JOBS_DEBOUNCE_MS` (400 ms by default). A job that exits while the agent is streaming arrives as
+a follow-up after the current turn, not in the middle of it. A job you stopped with `job_stop`
+opens no turn, because that tool result already carried the exit. A run you cancelled with Escape
+holds the wake-ups; the next thing you send releases them, so a finished job never starts a
+conversation you abandoned.
+
+## Time
+
+From `bun bench.ts`, headless, no model, Apple M5 Max, Bun 1.4.2, Pi 1.1.0, debounce at its default
+400 ms, five repeats per row:
+
+| Batch of jobs | p50 | p95 | max |
+| --- | --- | --- | --- |
+| 1 | 401 ms | 402 ms | 402 ms |
+| 3 | 401 ms | 402 ms | 402 ms |
+| 10 | 400 ms | 402 ms | 402 ms |
+
+The gap is the debounce window and a couple of milliseconds. The batch size does not move it, which
+is the point of coalescing exits into one turn.
+
+One end-to-end run against a real model, `bun jobs-rpc.ts`: the job started at 2.8 s, the first run
+settled at 3.7 s while the job still ran, the `sleep 45` job exited at about 47.8 s, and the new run
+opened at 48.2 s. Call it about half a second from exit to a turn, model included.
+
+## Tokens
+
+A wake-up is a message, so it costs input tokens once. The log does not: it stays on disk and the
+agent reads it with the `read` tool, choosing how much. The default tail cap is 3000 bytes.
+
+Same bench run, Pi's own token estimator:
+
+| Log size | Message bytes | Tokens | Note |
+| --- | --- | --- | --- |
+| 0 B | 214 | 54 | structure only |
+| 1700 B | 1938 | 485 | the whole log fits in the tail |
+| 20000 B | 3268 | 817 | tail capped at 3000 bytes |
+
+Two things follow from the second table. Structure is about 200 bytes, so a quiet job is nearly
+free. And the message quotes the command you passed: a command that carries its own data inflates
+the wake-up past the log tail, so put big input in a file and keep the command short.
+
+The durable records `/jobs` needs go through `appendEntry`, which stays out of model context. A
+resumed session still lists its jobs and their log paths, and it costs no tokens.
+
+## Install
+
+Requirements: Pi 1.1.0 or newer, macOS or Linux, a POSIX shell. No build step and no runtime
+dependencies. Pi supplies the three host packages the extension imports, declared here as
+`peerDependencies`.
+
+```bash
+pi install npm:pi-wake-jobs     # pinned releases
+pi install git:github.com/Barty13/pi-wake-jobs
+```
+
+For work on the source:
+
+```bash
+bun install
+bun test              # 44 cases, about 34 s
+bunx tsc --noEmit
+bun bench.ts          # the numbers above
+```
+
+`devDependencies` pin the host packages so `bun test` runs outside a Pi install tree. At runtime Pi
+maps those imports to its own copies, and the pin cannot shadow them. That was measured, not
+assumed: with a physical copy of `@earendil-works/pi-tui` in the package's `node_modules`, the
+extension still received the host copy.
+
+## Settings
+
+Environment variables, read once at load.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PI_JOBS_DEBOUNCE_MS` | `400` | Window that coalesces exits into one turn. |
+| `PI_JOBS_WAIT_MAX_S` | `300` | Largest `wait` accepted by `job_status`. |
+| `PI_JOBS_TAIL_BYTES` | `3000` | Log bytes carried into a report or a wake-up. |
+| `PI_JOBS_DIR` | `<tmpdir>/pi-jobs` | Log directory. |
+| `PI_JOBS_KEEP_DAYS` | `7` | Age after which a log of a dead process is removed. `0` turns the sweep off. |
+| `PI_JOBS_KEEP` | `200` | Ceiling for the pile of younger logs of dead processes. `0` turns the ceiling off. |
+
+## Log files
+
+Every job writes `$PI_JOBS_DIR/<id>-<pid>.log`, and the pid belongs to the Pi process that ran it.
+Cleanup runs at `session_start`, when the session is idle and no path is in use yet. Two triggers,
+either one is enough:
+
+- a log older than `PI_JOBS_KEEP_DAYS` whose Pi process is gone;
+- the oldest logs of dead processes beyond the newest `PI_JOBS_KEEP`, so a burst of short runs
+  cannot fill the disk between two sweeps.
+
+A log whose Pi process still runs is never touched, even if it has not been written to for weeks.
+Pruning only reaches files of runs that ended. Set `PI_JOBS_KEEP_DAYS=0` to keep everything.
+
+## Limits
+
+- **No Windows.** Detached process groups and `pgrep` do not exist there. The extension does not
+  check and will not stop jobs correctly.
+- macOS is verified on an Apple M5 Max. Linux runs in CI on every push.
+- **A job does not outlive its session.** `session_shutdown` signals every running job and gives it
+  two seconds to finish its own cleanup, then signals the process group again. A reload stops jobs
+  too. Nothing is rebuilt when the session comes back.
+- A process that never exits produces no wake-up. Stop it with `job_stop`.
+- Print and JSON modes get no wake-ups, because no idle agent is waiting. There, pass `wait` to
+  `job_status`.
+- Commands run in a shell with the environment of the Pi process, exactly like the built-in `bash`
+  tool. Anything the model can reach from that environment, a job can reach too.
+
+## How it was built
+
+Written on an Apple M5 Max (128 GiB, macOS 27.0.1) with Pi 1.1.0 in the terminal, driven by a local
+model at oQ5e quantization. No cloud model was involved, so the loop was free and long: the whole
+extension, its 44 tests, this README's numbers and the two end-to-end harness runs.
+
+The extension state machine is the interesting part, and `jobs.ts` documents it at the top: how
+exits become one batched turn, how a `wait` in `job_status` pulls a job out of that batch, and why a
+cancelled run holds the wake-ups instead of losing them.
+
+## Tests
+
+`bun test` covers registration, the wake-up path, batching, delivery against the run state, cwd
+handling, the bounded job table, `job_stop` reaching children, the retention rules, the transcript
+line, and shutdown. It drives the host surface only: what the host received, never a variable inside
+the extension.
+
+Two extras:
+
+```bash
+bun jobs-rpc.ts                        # real model: exit opens a new run
+JOBS_RPC_SCENARIO=wait bun jobs-rpc.ts # real model: wait carries the exit, no second run
+```
+
+They cost tokens and take about a minute each. The harness starts Pi with `--no-extensions`, so it
+loads the copy in this directory and nothing you have installed under `~/.pi/agent/extensions`.
+`PI_JOBS_EXTENSION` points it at another checkout.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
