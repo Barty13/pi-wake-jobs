@@ -209,7 +209,9 @@ either one is enough:
   cannot fill the disk between two sweeps.
 
 A log whose Pi process still runs is never touched, even if it has not been written to for weeks.
-Pruning only reaches files of runs that ended. Set `PI_JOBS_KEEP_DAYS=0` to keep everything.
+Pruning only reaches files of runs that ended, and only names this extension wrote, `j<number>-<pid>.log`.
+Any other file in that directory is left alone whatever its age. Set `PI_JOBS_KEEP_DAYS=0` to keep
+everything.
 
 ## When not to use it
 
