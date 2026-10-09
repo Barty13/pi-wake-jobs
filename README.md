@@ -103,6 +103,10 @@ Three tools and one command.
 The footer of the TUI also carries a running count, `2 jobs running`, and it clears itself when
 nothing runs. `PI_JOBS_FOOTER=0` leaves the footer alone.
 
+The table above the editor repaints once a second while a job runs, so its seconds move without a key
+press. It stops on its own when no job is left, when you clear it, and when the session ends.
+`PI_JOBS_TICK_MS=0` keeps it still, a larger number repaints less often.
+
 Each job is one command, one log file, one exit code. The job is a detached child process and the
 leader of its own process group, so `job_stop` reaches the compilers and test workers it started,
 not only the shell line you typed.
@@ -161,23 +165,24 @@ conversation you abandoned.
 
 ## Time
 
-From `bun bench.ts`, headless, no model, Apple M5 Max, Bun 1.4.2, Pi 1.1.0, version 0.1.4, debounce
+From `bun bench.ts`, headless, no model, Apple M5 Max, Bun 1.4.2, Pi 1.1.0, version 0.1.6, debounce
 at its default 400 ms, five repeats per row:
 
 | Batch of jobs | p50 | p95 | max |
 | --- | --- | --- | --- |
-| 1 | 401 ms | 401 ms | 401 ms |
-| 3 | 401 ms | 403 ms | 403 ms |
-| 10 | 396 ms | 398 ms | 398 ms |
+| 1 | 401 ms | 402 ms | 402 ms |
+| 3 | 401 ms | 402 ms | 402 ms |
+| 10 | 399 ms | 401 ms | 401 ms |
 
 The gap is the debounce window and a couple of milliseconds. The batch size does not move it, which
 is the point of coalescing exits into one turn.
 
 Two runs against a real model, `bun jobs-rpc.ts`, on this version. The wake scenario: `job_start`
-returned at 2.4 s, the first run settled at 3.3 s while the job still ran, the `sleep 45` job exited
-at about 47.4 s, and a new run opened at 47.8 s. The wait scenario: the tool waited inside one run and
-settled at 9.9 s after a `sleep 6` command, with no second run for the eight seconds of watching after
-it. Call it about half a second from exit to a turn, model included.
+returned at 6.8 s, the first run settled at 12.7 s while the job still ran, the `sleep 45` job exited
+at about 52.1 s, and a new run opened at 52.4 s. The wait scenario: the tool waited inside one run and
+settled at 16.5 s, for a `sleep 6` command started at 8.2 s, with no second run for the eight seconds
+of watching after it. Call it about half a second from exit to a turn, model included. The seconds
+before `job_start` are the model thinking, not the extension.
 
 ## Tokens
 
@@ -235,6 +240,7 @@ Environment variables, read once at load.
 | `PI_JOBS_WAIT_MAX_S` | `300` | Largest `wait` accepted by `job_status`. |
 | `PI_JOBS_TAIL_BYTES` | `3000` | Log bytes carried into a report or a wake-up. |
 | `PI_JOBS_FOOTER` | on | `0` leaves the Pi footer alone, so no job count shows there. |
+| `PI_JOBS_TICK_MS` | `1000` | Repaint interval of an open table, so its seconds move. `0` keeps it still. |
 | `PI_JOBS_DIR` | `<tmpdir>/pi-jobs` | Log directory. |
 | `PI_JOBS_KEEP_DAYS` | `7` | Age after which a log of a dead process is removed. `0` turns the sweep off. |
 | `PI_JOBS_KEEP` | `200` | Ceiling for the pile of younger logs of dead processes. `0` turns the ceiling off. |

@@ -44,8 +44,9 @@
  *   `/jobs` puts a table above the editor: a header with the count of the whole
  *   session, then one aligned row per open job. The table is redrawn on every
  *   settle and taken away when its kind has no row left, so a table of open work
- *   cannot rot with finished rows. A log path costs 60 columns, so the widget
- *   leaves it out and the plain listing in other modes keeps it.
+ *   cannot rot with finished rows. While a job runs it also repaints once a
+ *   second, so its seconds move with no key press. A log path costs 60 columns,
+ *   so the widget leaves it out and the plain listing in other modes keeps it.
  *
  * Lifetime:
  *   A job is a child of this Pi process. `session_shutdown` signals every
@@ -83,6 +84,10 @@
  *                        waits of job_stop keep their own fixed limits.
  *   PI_JOBS_TAIL_BYTES   log bytes read into a report or a wake-up (default 3000)
  *   PI_JOBS_FOOTER       0 leaves the Pi footer alone, so no job count shows there
+ *   PI_JOBS_TICK_MS      repaint interval of an open table (default 1000). Zero
+ *                        keeps it still. The timer runs only while the table is
+ *                        open and a job is running, and it is unref'd, so it
+ *                        never holds the process open.
  *   PI_JOBS_DIR          log directory (default <tmpdir>/pi-jobs)
  *   PI_JOBS_KEEP_DAYS    age a dead process's log may reach (default 7). Zero
  *                        turns the prune off altogether.
@@ -111,6 +116,8 @@ const WAIT_MAX_S = Number(process.env.PI_JOBS_WAIT_MAX_S ?? 300);
 const TAIL_BYTES = Number(process.env.PI_JOBS_TAIL_BYTES ?? 3000);
 // The footer count is on unless the human turns it off.
 const FOOTER = process.env.PI_JOBS_FOOTER !== "0";
+// How often an open table repaints itself, so its seconds move. 0 keeps it still.
+const TICK_MS = Number(process.env.PI_JOBS_TICK_MS ?? 1000);
 const LOG_DIR = process.env.PI_JOBS_DIR ?? join(tmpdir(), "pi-jobs");
 const KEEP_DAYS = Number(process.env.PI_JOBS_KEEP_DAYS ?? 7);
 const KEEP_FILES = Number(process.env.PI_JOBS_KEEP ?? 200);
@@ -163,6 +170,8 @@ let seq = 0;
 // The table above the editor: which rows it holds, or null when none is drawn.
 let tableMode: "running" | "all" | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
+// The one-second repaint of an open table. Null when nothing needs repainting.
+let ticker: ReturnType<typeof setInterval> | null = null;
 let closed = false;
 let seen: ExtensionContext | null = null;
 let api: ExtensionAPI | null = null;
@@ -622,6 +631,35 @@ function tableHeader(all: JobView[], shown: number): string {
 	return shown === all.length ? head : `${head}, ${shown} shown`;
 }
 
+/** Stop the one-second repaint. Safe to call when none is running. */
+function stopTicker(): void {
+	if (ticker === null) return;
+	clearInterval(ticker);
+	ticker = null;
+}
+
+/**
+ * Keep the ticker matched to the table. It runs only while a table is open and
+ * a job is still going, the only rows whose seconds move. An unref'd timer lets
+ * the process exit on its own terms.
+ */
+function syncTicker(running: number): void {
+	if (TICK_MS <= 0 || tableMode === null || running === 0) {
+		stopTicker();
+		return;
+	}
+	if (ticker !== null) return;
+	ticker = setInterval(() => {
+		const ctx = seen;
+		if (closed || tableMode === null || ctx === null || ctx.mode !== "tui") {
+			stopTicker();
+			return;
+		}
+		drawTable(ctx);
+	}, TICK_MS);
+	ticker.unref?.();
+}
+
 /** Footer text for the running count. Short, because every extension shares one line. */
 function footerText(running: number): string | undefined {
 	if (running === 0) return undefined;
@@ -648,9 +686,11 @@ function drawTable(ctx: ExtensionContext): void {
 	if (!shown.length) {
 		tableMode = null;
 		ctx.ui.setWidget("jobs", undefined);
+		syncTicker(0);
 		return;
 	}
 	ctx.ui.setWidget("jobs", tableLines(ctx, all, shown), { placement: "aboveEditor" });
+	syncTicker(all.filter((job) => job.state === "running").length);
 }
 
 /** Header plus aligned rows. The widget leaves the log path out, plain output keeps it. */
@@ -887,6 +927,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		closed = true;
+		stopTicker();
 		if (timer !== null) {
 			clearTimeout(timer);
 			timer = null;
@@ -926,6 +967,7 @@ export default function (pi: ExtensionAPI) {
 			const arg = (args ?? "").trim().toLowerCase();
 			if (arg === "clear") {
 				tableMode = null;
+				stopTicker();
 				ctx.ui.setWidget("jobs", undefined);
 				return;
 			}
@@ -938,6 +980,7 @@ export default function (pi: ExtensionAPI) {
 					: "No job is running. `jobs all` lists the finished ones.";
 				if (ctx.mode === "tui") {
 					tableMode = null;
+					stopTicker();
 					ctx.ui.setWidget("jobs", undefined);
 					ctx.ui.notify(hint, "info");
 				} else {

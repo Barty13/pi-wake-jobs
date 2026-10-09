@@ -31,6 +31,10 @@ it stays out of `bun test`. Run it when a change touches the wake-up path.
 - Keep the POSIX assumption. A job runs with `detached: true` and the extension kills the process
   group with `process.kill(-pid, ...)`. Do not add platform checks for Windows; the tool does not
   support native Windows.
+- Keep the one-second ticker narrow. It runs only while a table is open and a job is running, it is
+  `unref`'d, and `session_shutdown` stops it. A second unref'd timer belongs to the same rule.
+- In `jobs.test.ts`, keep the cases that emit `session_shutdown` at the end of the file. A shutdown
+  mid-suite kills a running job, and its wake-up lands in a later case and breaks it.
 
 ## The gallery image
 

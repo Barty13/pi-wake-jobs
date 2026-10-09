@@ -305,6 +305,83 @@ describe("the /jobs command", () => {
 	});
 });
 
+describe("the open table keeps its clock", () => {
+	test("seconds move on their own while a job runs", async () => {
+		const started = await host.call("job_start", { command: "sleep 20", name: "ticker" });
+		const id = started.structuredContent.jobs[0]!.id;
+		await host.runCommand("jobs");
+		const before = host.widgets.get("jobs")![1]!;
+		const calls = host.widgetCalls.length;
+		await sleep(2300);
+		const after = host.widgets.get("jobs")![1]!;
+		expect(host.widgetCalls.length).toBeGreaterThan(calls);
+		expect(after).not.toBe(before);
+		expect(Number(after.match(/(\d+)s/)?.[1] ?? 0)).toBeGreaterThanOrEqual(2);
+		await host.call("job_stop", { job_id: id });
+		await host.runCommand("jobs", "clear");
+		await host.quiet(400);
+	});
+
+	test("the repaint stops when no job is left to count", async () => {
+		const started = await host.call("job_start", { command: "sleep 20", name: "ends" });
+		const id = started.structuredContent.jobs[0]!.id;
+		await host.runCommand("jobs");
+		await sleep(1200);
+		await host.call("job_stop", { job_id: id });
+		await host.quiet(400);
+		const calls = host.widgetCalls.length;
+		await sleep(2300);
+		expect(host.widgetCalls.length).toBe(calls);
+		expect(host.widgets.get("jobs")).toBeUndefined();
+	});
+
+	test("clear stops the repaint", async () => {
+		const started = await host.call("job_start", { command: "sleep 20", name: "hidden" });
+		const id = started.structuredContent.jobs[0]!.id;
+		await host.runCommand("jobs");
+		await host.runCommand("jobs", "clear");
+		const calls = host.widgetCalls.length;
+		await sleep(2300);
+		expect(host.widgetCalls.length).toBe(calls);
+		await host.call("job_stop", { job_id: id });
+		await host.quiet(400);
+	});
+
+	// The tick is read once, at module load, so the off switch needs a process
+	// that loads the extension with its own value of the knob.
+	const still = "the table stays still when the tick is off";
+
+	/** Run a case in a child that loads the extension with the tick switched off. */
+	function withTickOff(): { stderr: string; exitCode: number } {
+		const child = Bun.spawnSync([process.execPath, "test", "jobs.test.ts", "-t", still], {
+			cwd: import.meta.dir,
+			env: { ...process.env, PI_JOBS_TICK_MS: "0", PI_JOBS_CASE: still },
+		});
+		return { stderr: child.stderr.toString(), exitCode: child.exitCode ?? 1 };
+	}
+
+	if (process.env.PI_JOBS_TICK_MS === "0") {
+		test(still, async () => {
+			await host.emit("session_start", { reason: "startup" });
+			const started = await host.call("job_start", { command: "sleep 20", name: "still" });
+			const id = started.structuredContent.jobs[0]!.id;
+			await host.runCommand("jobs");
+			const calls = host.widgetCalls.length;
+			await sleep(2300);
+			expect(host.widgetCalls.length).toBe(calls);
+			expect(host.widgets.get("jobs")![1]).toContain("0s");
+			await host.call("job_stop", { job_id: id });
+			await host.quiet(400);
+		});
+	} else {
+		test(still, () => {
+			const child = withTickOff();
+			expect(child.stderr).toContain("1 pass");
+			expect(child.exitCode).toBe(0);
+		});
+	}
+});
+
 describe("the footer count", () => {
 	/** How many jobs the footer says are running. 0 when it shows nothing. */
 	function counted(): number {
@@ -828,6 +905,17 @@ describe("session_shutdown", () => {
 		const after = await host.call("job_status", {});
 		expect(after.structuredContent.jobs.length).toBe(0);
 		expect(host.messages.length).toBe(0);
+	});
+	test("the one-second repaint stops with the session", async () => {
+		await host.emit("session_start", { reason: "reload" });
+		await host.call("job_start", { command: "sleep 20", name: "at-shutdown" });
+		await host.runCommand("jobs");
+		await sleep(1200);
+		await host.emit("session_shutdown", { reason: "quit" });
+		host.messages.length = 0;
+		const calls = host.widgetCalls.length;
+		await sleep(2300);
+		expect(host.widgetCalls.length).toBe(calls);
 	});
 });
 

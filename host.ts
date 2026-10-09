@@ -75,6 +75,9 @@ export class JobsHost {
 	readonly entries: RecordedEntry[] = [];
 	readonly notifications: string[] = [];
 	readonly widgets = new Map<string, string[] | undefined>();
+	// Every setWidget call in order. A redraw can rewrite the same key, and the
+	// Map alone would hide that a repaint happened.
+	readonly widgetCalls: Array<{ key: string; lines: string[] | undefined; at: number }> = [];
 	/** Resolvers passed to registerToolRenderer, in registration order. */
 	readonly renderers: Array<(toolName: string, next: () => CapturedRenderers | undefined) => CapturedRenderers | undefined> = [];
 	private readonly handlers = new Map<string, Array<(event: any, ctx: any) => Promise<void>>>();
@@ -94,7 +97,10 @@ export class JobsHost {
 		isIdle: () => this.idle,
 		ui: {
 			notify: (message: string) => this.notifications.push(message),
-			setWidget: (key: string, lines: string[] | undefined) => this.widgets.set(key, lines),
+			setWidget: (key: string, lines: string[] | undefined) => {
+				this.widgets.set(key, lines);
+				this.widgetCalls.push({ key, lines, at: Date.now() });
+			},
 			setStatus: (key: string, text: string | undefined) => this.statuses.set(key, text),
 			theme: plainTheme(),
 		},
