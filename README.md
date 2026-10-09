@@ -13,6 +13,11 @@ waiting for the agent.
 $ pi install npm:pi-wake-jobs
 ```
 
+![The /jobs table at three moments of one run](assets/gallery.png)
+
+Three moments from one real run. The rows are the bytes the widget drew, captured with
+`bun gallery/capture.ts` and drawn by `python3 gallery/render.py`, no mock-up.
+
 Or from git:
 
 ```

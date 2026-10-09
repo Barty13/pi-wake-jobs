@@ -1,6 +1,6 @@
 {
   "name": "pi-wake-jobs",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Background shell jobs for Pi. The agent does not hold a turn open while it waits: job_start returns at once, the exit opens one turn.",
   "license": "MIT",
   "keywords": [
@@ -22,7 +22,8 @@
   "pi": {
     "extensions": [
       "jobs.ts"
-    ]
+    ],
+    "image": "assets/gallery.png"
   },
   "scripts": {
     "test": "bun test",
@@ -48,6 +49,7 @@
     "jobs-rpc.ts",
     "bench.ts",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "assets/gallery.png"
   ]
 }

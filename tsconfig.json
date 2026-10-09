@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["jobs.ts", "host.ts", "jobs.test.ts", "jobs-rpc.ts", "bench.ts"]
+  "include": ["jobs.ts", "host.ts", "jobs.test.ts", "jobs-rpc.ts", "bench.ts", "gallery/capture.ts"]
 }

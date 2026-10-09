@@ -32,6 +32,22 @@ it stays out of `bun test`. Run it when a change touches the wake-up path.
   group with `process.kill(-pid, ...)`. Do not add platform checks for Windows; the tool does not
   support native Windows.
 
+## The gallery image
+
+`assets/gallery.png` is drawn, not screenshotted. `bun gallery/capture.ts` runs the extension against
+the test host and prints the widget lines and the footer text as JSON. `gallery/render.py` draws those
+bytes into a 1200 x 630 PNG with Menlo from `/System/Library/Fonts/Menlo.ttc`. It needs Pillow, which
+the repo does not carry:
+
+```bash
+python3 -m venv /tmp/imgvenv && /tmp/imgvenv/bin/pip install pillow
+bun gallery/capture.ts > /tmp/cap.json
+/tmp/imgvenv/bin/python gallery/render.py /tmp/cap.json assets/gallery.png
+```
+
+Never type rows into `render.py` by hand. If the text in the image cannot come from a run, do not
+change the image.
+
 ## Report a bug
 
 Include the Pi version, the Bun version, the OS, every `PI_JOBS_*` setting you set, the file mode of
