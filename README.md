@@ -93,7 +93,7 @@ Three tools and one command.
 | `job_start` | Start a command in the background, return its id at once. `command`, optional `name`, optional `cwd`. |
 | `job_status` | State, exit code, elapsed seconds, log tail for one job or the whole session. Pass `wait` to block until one job ends. |
 | `job_stop` | Signal a job and every command it started. |
-| `/jobs` | The human's view. A table above the editor, no model turn. `/jobs running` lists only open work. |
+| `/jobs` | The human's view: open work above the editor, no model turn. `all` adds finished jobs, `clear` hides the table. |
 
 The footer of the TUI also carries a running count, `2 jobs running`, and it clears itself when
 nothing runs. `PI_JOBS_FOOTER=0` leaves the footer alone.
@@ -112,11 +112,20 @@ job_start j1 kernel-build  make -j14 world
 j1 kernel-build [running] exit=null 12s pid=8812
 ```
 
-`/jobs` draws a table above the editor, so you can see open work without asking the model. The
-header counts the whole table, not only the rows on screen:
+`/jobs` draws open work above the editor, so you see it without asking the model. The header counts
+the whole session, not only the rows on screen:
 
 ```
-1 running of 4
+1 running of 4, 1 shown
+j3  tests             [running]  exit=null   612s pid=8901
+```
+
+A table of open work removes itself when the last job ends, so it never sits there with finished
+rows. `/jobs all` is the opposite: the whole session, finished rows included, and it stays until you
+type `/jobs clear`.
+
+```
+0 running of 4
 j1  kernel-build      [ok]       exit=0    2431s pid=8812
 j2  fetch index       [ok]       exit=0      18s pid=8840
 j3  tests             [running]  exit=null   612s pid=8901
@@ -125,8 +134,8 @@ j4  docs              [fail]     exit=2      44s pid=8907
 
 The footer carries the count when you never type `/jobs`, so open work shows while you do something
 else. A log path costs 60 columns, so the table leaves it out. `job_status` and the wake-up both
-print it. In print and JSON modes, where there is no widget, `/jobs` prints the same rows with the
-path appended.
+print it. In print and JSON modes, where there is no widget, the command prints the same rows with
+the path appended.
 
 The wake-up is a normal message in the conversation, so you see exactly what the agent sees:
 
@@ -147,23 +156,23 @@ conversation you abandoned.
 
 ## Time
 
-From `bun bench.ts`, headless, no model, Apple M5 Max, Bun 1.4.2, Pi 1.1.0, version 0.1.3, debounce
+From `bun bench.ts`, headless, no model, Apple M5 Max, Bun 1.4.2, Pi 1.1.0, version 0.1.4, debounce
 at its default 400 ms, five repeats per row:
 
 | Batch of jobs | p50 | p95 | max |
 | --- | --- | --- | --- |
-| 1 | 401 ms | 402 ms | 402 ms |
-| 3 | 401 ms | 405 ms | 405 ms |
-| 10 | 395 ms | 398 ms | 398 ms |
+| 1 | 401 ms | 401 ms | 401 ms |
+| 3 | 401 ms | 403 ms | 403 ms |
+| 10 | 396 ms | 398 ms | 398 ms |
 
 The gap is the debounce window and a couple of milliseconds. The batch size does not move it, which
 is the point of coalescing exits into one turn.
 
 Two runs against a real model, `bun jobs-rpc.ts`, on this version. The wake scenario: `job_start`
-returned at 3.4 s, the first run settled at 4.9 s while the job still ran, the `sleep 45` job exited
-at about 48.4 s, and a new run opened at 48.9 s. The wait scenario: the tool waited inside one run
-and settled with the exit in its own output, with no second run for the eight seconds of watching
-after it. Call it about half a second from exit to a turn, model included.
+returned at 2.4 s, the first run settled at 3.3 s while the job still ran, the `sleep 45` job exited
+at about 47.4 s, and a new run opened at 47.8 s. The wait scenario: the tool waited inside one run and
+settled at 9.9 s after a `sleep 6` command, with no second run for the eight seconds of watching after
+it. Call it about half a second from exit to a turn, model included.
 
 ## Tokens
 

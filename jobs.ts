@@ -12,7 +12,10 @@
  *   job_stop    signal a job and its children
  *
  * Command:
- *   /jobs       list jobs for the human, without a model turn
+ *   /jobs       open work above the editor, no model turn
+ *   /jobs all   the whole session, finished rows included, and it stays
+ *   /jobs clear take the table away
+ *   `running` means the same as no argument, it is the default.
  *
  * The wake-up path:
  *   child exits -> push to a pending list -> arm one debounce timer ->
@@ -39,8 +42,10 @@
  *   runs. Pi joins every extension status on one line sorted by key, so the text
  *   stays short, one line, no path. `PI_JOBS_FOOTER=0` leaves the footer alone.
  *   `/jobs` puts a table above the editor: a header with the count of the whole
- *   table, then one aligned row per job. A log path costs 60 columns, so the
- *   widget leaves it out and the plain listing in other modes keeps it.
+ *   session, then one aligned row per open job. The table is redrawn on every
+ *   settle and taken away when its kind has no row left, so a table of open work
+ *   cannot rot with finished rows. A log path costs 60 columns, so the widget
+ *   leaves it out and the plain listing in other modes keeps it.
  *
  * Lifetime:
  *   A job is a child of this Pi process. `session_shutdown` signals every
@@ -155,6 +160,8 @@ const jobs = new Map<string, Job>();
 const waiters = new Map<string, Array<() => void>>();
 let pending: Job[] = [];
 let seq = 0;
+// The table above the editor: which rows it holds, or null when none is drawn.
+let tableMode: "running" | "all" | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let closed = false;
 let seen: ExtensionContext | null = null;
@@ -377,7 +384,7 @@ function settle(job: Job, exitCode: number | null, signal: string | null): void 
 	job.state = job.stopRequested ? "stopped" : exitCode === 0 ? "ok" : "fail";
 	job.child = null;
 	record(job);
-	if (seen) drawFooter(seen);
+	if (seen) drawHud(seen);
 	const callbacks = waiters.get(job.id) ?? [];
 	waiters.delete(job.id);
 	for (const callback of callbacks) callback();
@@ -621,10 +628,39 @@ function footerText(running: number): string | undefined {
 	return `${running} ${running === 1 ? "job" : "jobs"} running`;
 }
 
-/** Draw or clear the footer count. Only the TUI has a footer to draw on. */
-function drawFooter(ctx: ExtensionContext): void {
-	if (!FOOTER || ctx.mode !== "tui") return;
-	ctx.ui.setStatus("jobs", footerText(list().filter((job) => job.state === "running").length));
+/** Count and table together. Both answer "what is still going", one line each. */
+function drawHud(ctx: ExtensionContext): void {
+	if (FOOTER && ctx.mode === "tui") {
+		ctx.ui.setStatus("jobs", footerText(list().filter((job) => job.state === "running").length));
+	}
+	drawTable(ctx);
+}
+
+/**
+ * Redraw the table above the editor. A table of open work that has no open work
+ * left is taken away, not left to rot with finished rows. A table of all jobs
+ * stays until a human clears it or asks for another view.
+ */
+function drawTable(ctx: ExtensionContext): void {
+	if (ctx.mode !== "tui" || tableMode === null) return;
+	const all = list().map((job) => view(job, 0));
+	const shown = tableMode === "running" ? all.filter((job) => job.state === "running") : all;
+	if (!shown.length) {
+		tableMode = null;
+		ctx.ui.setWidget("jobs", undefined);
+		return;
+	}
+	ctx.ui.setWidget("jobs", tableLines(ctx, all, shown), { placement: "aboveEditor" });
+}
+
+/** Header plus aligned rows. The widget leaves the log path out, plain output keeps it. */
+function tableLines(ctx: ExtensionContext, all: JobView[], shown: JobView[]): string[] {
+	const cells = shown.map(cellOf);
+	const width = columnWidth(cells);
+	const head = tableHeader(all, shown.length);
+	return ctx.mode === "tui"
+		? [head, ...cells.map((cell) => plainRow(cell, width))]
+		: [head, ...cells.map((cell, at) => `${plainRow(cell, width)}  ${shown[at]!.log}`)];
 }
 
 function stateColor(state: string): ThemeColor {
@@ -726,7 +762,7 @@ const jobStart = defineTool({
 	async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 		seen = ctx;
 		const job = startJob(params, ctx);
-		drawFooter(ctx);
+		drawHud(ctx);
 		return report([job], `Started job ${job.id} (${job.name}). pid ${job.pid}. Log ${job.logPath}.`);
 	},
 });
@@ -817,7 +853,8 @@ export default function (pi: ExtensionAPI) {
 		batchWaited = false;
 		seedSeq();
 		pruneLogs();
-		drawFooter(ctx);
+		tableMode = null;
+		drawHud(ctx);
 	});
 
 	// A cancelled run holds the wake-ups. A settle that was not a cancellation
@@ -883,29 +920,34 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("jobs", {
-		description: "List background jobs of this session: state, exit code, log path",
+		description: "Open background jobs above the editor. `all` adds finished ones, `clear` hides the table",
 		handler: async (args, ctx) => {
 			seen = ctx;
-			const all = list();
-			const onlyRunning = (args ?? "").trim().toLowerCase() === "running";
-			const shown = onlyRunning ? all.filter((job) => job.state === "running") : all;
-			if (!shown.length) {
-				const empty = ["No job in this session."];
-				if (ctx.mode === "tui") ctx.ui.setWidget("jobs", empty, { placement: "aboveEditor" });
-				else ctx.ui.notify(empty.join("\n"), "info");
+			const arg = (args ?? "").trim().toLowerCase();
+			if (arg === "clear") {
+				tableMode = null;
+				ctx.ui.setWidget("jobs", undefined);
 				return;
 			}
-			const views = shown.map((job) => view(job, 0));
-			const cells = views.map(cellOf);
-			const width = columnWidth(cells);
-			const head = tableHeader(list().map((job) => view(job, 0)), views.length);
-			// A log path costs 60 characters, so the widget leaves it out and the plain
-			// listing keeps it.
-			const lines = ctx.mode === "tui"
-				? [head, ...cells.map((cell) => plainRow(cell, width))]
-				: [head, ...cells.map((cell, at) => `${plainRow(cell, width)}  ${views[at]!.log}`)];
-			if (ctx.mode === "tui") ctx.ui.setWidget("jobs", lines, { placement: "aboveEditor" });
-			else ctx.ui.notify(lines.join("\n"), "info");
+			tableMode = arg === "all" ? "all" : "running";
+			const all = list().map((job) => view(job, 0));
+			const shown = tableMode === "all" ? all : all.filter((job) => job.state === "running");
+			if (!shown.length) {
+				const hint = tableMode === "all"
+					? "No job in this session."
+					: "No job is running. `jobs all` lists the finished ones.";
+				if (ctx.mode === "tui") {
+					tableMode = null;
+					ctx.ui.setWidget("jobs", undefined);
+					ctx.ui.notify(hint, "info");
+				} else {
+					ctx.ui.notify(hint, "info");
+				}
+				return;
+			}
+			if (ctx.mode === "tui") drawTable(ctx);
+			else ctx.ui.notify(tableLines(ctx, all, shown).join("\n"), "info");
 		},
 	});
+
 }

@@ -239,43 +239,69 @@ describe("job_status", () => {
 });
 
 describe("the /jobs command", () => {
-	test("counts the rows and lines the columns up", async () => {
+	test("open work is listed, and the table clears itself when the work ends", async () => {
+		const live = await host.call("job_start", { command: "sleep 20", name: "open-work" });
+		const liveId = live.structuredContent.jobs[0]!.id;
+		await host.runCommand("jobs");
+		const open = host.widgets.get("jobs")!;
+		expect(open[0]).toMatch(/^1 running of \d+(, 1 shown)?$/);
+		expect(open.length).toBe(2);
+		expect(open[1]).toContain("[running]");
+		// The job ends. The table showed open work, so open work is all it may keep.
+		await host.call("job_stop", { job_id: liveId });
+		await host.quiet(400);
+		expect(host.widgets.get("jobs")).toBeUndefined();
+	});
+
+	test("an all table keeps the finished rows", async () => {
+		await host.runCommand("jobs", "all");
+		const lines = host.widgets.get("jobs")!;
+		expect(lines[0]).toMatch(/^\d+ running of [1-9]/);
+		expect(lines.length).toBeGreaterThan(1);
+		expect(lines.slice(1).some((line) => line.includes("[ok]"))).toBe(true);
+		// Nothing runs now, and the table stays. History does not clear itself.
+		await host.quiet(400);
+		expect(host.widgets.get("jobs")).toBeDefined();
+	});
+
+	test("clear empties the table", async () => {
+		await host.runCommand("jobs", "all");
+		expect(host.widgets.get("jobs")).toBeDefined();
+		await host.runCommand("jobs", "clear");
+		expect(host.widgets.get("jobs")).toBeUndefined();
+	});
+
+	test("columns line up, and the header counts the whole table", async () => {
 		const short = await host.call("job_start", { command: "sleep 20", name: "a" });
 		const long = await host.call("job_start", { command: "sleep 20", name: "a-much-longer-name" });
 		await host.runCommand("jobs");
 		const lines = host.widgets.get("jobs")!;
-		expect(lines[0]).toMatch(/^\d+ running of \d+$/);
+		expect(lines[0]).toMatch(/^2 running of \d+(, 2 shown)?$/);
 		const rows = lines.slice(1).filter((line) => line.startsWith("j"));
 		const at = rows.map((row) => row.indexOf("["));
 		expect(Math.min(...at)).toBeGreaterThan(4);
 		expect(Math.min(...at)).toBe(Math.max(...at));
+		expect(rows[0]).toMatch(/^j\d+\s+\S+\s+\[(running|ok|fail|stopped)\]\s+exit=/);
 		for (const job of [short, long]) {
 			await host.call("job_stop", { job_id: job.structuredContent.jobs[0]!.id });
 		}
-		await host.quiet(300);
+		await host.quiet(400);
+		expect(host.widgets.get("jobs")).toBeUndefined();
 	});
 
-	test("every row still carries id, state, and exit", async () => {
-		await host.runCommand("jobs");
-		const rows = host.widgets.get("jobs")!.slice(1).filter((line) => line.startsWith("j"));
-		expect(rows.length).toBeGreaterThanOrEqual(1);
-		expect(rows[0]).toMatch(/^j\d+\s+\S+\s+\[(running|ok|fail|stopped)\]\s+exit=/);
-	});
-
-	test("the running filter shortens it", async () => {
-		const started = await host.call("job_start", { command: "sleep 20", name: "live" });
-		const liveId = started.structuredContent.jobs[0]!.id;
+	test("the running argument behaves like the bare command", async () => {
+		const started = await host.call("job_start", { command: "sleep 20", name: "shown" });
+		const id = started.structuredContent.jobs[0]!.id;
 		await host.runCommand("jobs", "running");
-		const lines = host.widgets.get("jobs")!;
-		// The header plus the one running job.
-		expect(lines.length).toBe(2);
-		expect(lines[0]).toMatch(/^\d+ running of \d+, 1 shown$/);
-		expect(lines[1]).toContain("[running]");
-		await host.runCommand("jobs");
-		expect(host.widgets.get("jobs")!.length).toBeGreaterThan(2);
-		// Drain the job here. Its exit must not land in a later test.
-		await host.call("job_stop", { job_id: liveId });
-		await host.quiet(300);
+		const running = host.widgets.get("jobs")!;
+		expect(running.slice(1).every((line) => !line.includes("[ok]"))).toBe(true);
+		await host.runCommand("jobs", "all");
+		const all = host.widgets.get("jobs")!;
+		expect(all.length).toBeGreaterThan(running.length);
+		expect(all[0]).toMatch(/^\d+ running of [1-9]\d*$/);
+		await host.call("job_stop", { job_id: id });
+		await host.runCommand("jobs", "clear");
+		await host.quiet(400);
 	});
 });
 
