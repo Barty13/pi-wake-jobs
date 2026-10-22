@@ -207,9 +207,10 @@ resumed session still lists its jobs and their log paths, and it costs no tokens
 
 ## Install
 
-Requirements: Pi 1.1.0 or newer, macOS or Linux, a POSIX shell. No build step and no runtime
+Requirements: Pi 1.1.0 through 1.4.0, macOS or Linux, a POSIX shell. No build step and no runtime
 dependencies. Pi supplies the three host packages the extension imports, declared here as
-`peerDependencies`.
+`peerDependencies`. The CI typechecks both ends of that range, so a release that breaks either one
+fails the build.
 
 ```bash
 pi install npm:pi-wake-jobs     # pinned releases

@@ -22,3 +22,18 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun test
       - run: bunx tsc --noEmit
+
+  # The bottom of the Pi range the README promises. bun add pins the three
+  # host-supplied packages to that release and leaves every other dev
+  # dependency alone. It rewrites the checkout's package.json and bun.lock;
+  # CI never commits them, so the drift stays inside the runner.
+  floor:
+    name: typecheck on the oldest supported Pi
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun add -D @earendil-works/pi-ai@1.1.0 @earendil-works/pi-coding-agent@1.1.0 @earendil-works/pi-tui@1.1.0
+      - run: bunx tsc --noEmit
